@@ -33,6 +33,7 @@
       <button id="btnImpact" title="以当前画布（含未保存修改）重放核对全部预览与分享作答，找出受改稿影响的会话">🩺 改稿影响分析</button>
       <button id="btnRoute" title="勾选 1～6 个已连接选项，规划经过它们到达终点的最短选择序列">🧭 路线规划</button>
       <button id="btnI18n" title="为脚本维护目标语言译文：按节点/选项 ID 编辑标题、正文与选项译文，原文改动后译文标为待复核">🌐 多语言译文<span id="i18nBadge" class="i18n-badge" style="display:none"></span></button>
+      <button id="btnFunnel" title="选择某个已创建的分享快照，按每次作答的节点+选项顺序构建路径前缀树漏斗（到达/停止/完成/占父比例），点击前缀查看会话 ID">📈 分享路径漏斗</button>
       <button id="btnShare">🔗 只读分享</button>
       <button id="btnExport">导出 JSON</button>
       <button id="btnImport">导入 JSON</button>
@@ -221,6 +222,31 @@
     </div>
     <footer>
       <button data-close="i18nModal">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<!-- share answer path funnel modal -->
+<div class="modal-mask" id="funnelModal">
+  <div class="modal wide">
+    <header>📈 分享作答路径漏斗<span class="close" data-close="funnelModal">✕</span></header>
+    <div class="body">
+      <p class="route-tip">
+        选择一个<b>已创建的只读分享快照</b>，服务端只读取<b>该快照</b>下的分享作答会话（编辑器预览与其他快照不计入），
+        按每次作答记录的<b>原脚本节点 ID 与选项 ID 顺序</b>构建路径前缀树：环路中重复选择同一选项仍保留在<b>不同深度</b>，不会按节点合并。
+        每个前缀显示<b>到达会话数、在此停止的未完成数、在此完成数</b>与<b>相对父路径的到达比例</b>；
+        节点/选项文案取自<b>快照原文</b>（受访者当时看到的文字），后续改稿不影响这里。点击任一行可列出到达该前缀的会话 ID。
+      </p>
+      <div class="field">
+        <label for="funnelSnapshot">分享快照（按创建时间倒序）</label>
+        <select id="funnelSnapshot"></select>
+      </div>
+      <div id="funnelMeta"></div>
+      <div id="funnelBody"></div>
+    </div>
+    <footer>
+      <button id="funnelRefresh">↻ 刷新漏斗</button>
+      <button data-close="funnelModal">关闭</button>
     </footer>
   </div>
 </div>

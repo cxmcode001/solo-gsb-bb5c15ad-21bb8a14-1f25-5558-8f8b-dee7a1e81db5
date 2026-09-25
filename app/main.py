@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .db import get_db, init_db
+from .funnel import build_funnel
 from .graph import plan_route
 from .graph import replay_run
 from .graph import step as graph_step
@@ -595,6 +596,88 @@ def get_share(token: str):
             # translations.nodes[node_id].title/.text/.options[option_id].
             "translations": json.loads(row["translations"] or "{}"),
             "read_only": True}
+
+
+@app.get("/api/scripts/{script_id}/shares")
+def list_script_shares(script_id: int):
+    """List every read-only snapshot already created for this script.
+
+    Used by the editor's answer-path funnel view to pick which snapshot's
+    sessions to inspect. Read-only: only snapshot metadata plus per-snapshot
+    answer session counts are returned — never the answer content.
+    """
+    _fetch_script(script_id)  # 404 when the script itself is gone
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT token, script_name, created_at, invite_only, lang_code, lang_label "
+            "FROM shares WHERE script_id = ? ORDER BY created_at DESC, token DESC",
+            (script_id,),
+        ).fetchall()
+        stats = {r["share_token"]: r for r in db.execute(
+            "SELECT share_token, COUNT(*) AS run_count, "
+            "SUM(CASE WHEN finished = 1 THEN 1 ELSE 0 END) AS finished_count "
+            "FROM runs WHERE mode = 'share' AND share_token IN "
+            "(SELECT token FROM shares WHERE script_id = ?) "
+            "GROUP BY share_token",
+            (script_id,),
+        ).fetchall()}
+    return [{
+        "token": r["token"],
+        "name": r["script_name"],
+        "created_at": r["created_at"],
+        "invite_only": bool(r["invite_only"]),
+        "lang_code": r["lang_code"],
+        "lang_label": r["lang_label"],
+        "run_count": (stats[r["token"]]["run_count"] if r["token"] in stats else 0),
+        "finished_count": (stats[r["token"]]["finished_count"] if r["token"] in stats else 0),
+    } for r in rows]
+
+
+@app.get("/api/share/{token}/funnel")
+def share_funnel(token: str):
+    """Answer-path funnel for ONE read-only share snapshot.
+
+    Only answer sessions of THIS snapshot are read
+    (``runs.mode = 'share' AND share_token = token``) — editor previews and
+    other snapshots never enter the tree. Each session's ordered
+    (original node id, option id) choices form a prefix tree keyed by depth;
+    repeated choices in a cycle stay separate at different depths. Every
+    prefix reports reached / stopped-unfinished / completed session counts,
+    the reach ratio relative to its parent, and the run ids behind it. Node
+    and option labels come from the snapshot's frozen content (the original
+    text respondents saw), so later script edits never relabel the funnel.
+    The query is read-only.
+    """
+    with get_db() as db:
+        share = db.execute(
+            "SELECT content, script_name, created_at, invite_only, "
+            "lang_code, lang_label FROM shares WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if share is None:
+            raise HTTPException(404, "分享链接不存在或已失效")
+        run_rows = db.execute(
+            "SELECT id, steps, finished, created_at FROM runs "
+            "WHERE mode = 'share' AND share_token = ? ORDER BY id DESC",
+            (token,),
+        ).fetchall()
+
+    sessions = [{
+        "run_id": r["id"],
+        "steps": json.loads(r["steps"]),
+        "finished": bool(r["finished"]),
+        "created_at": r["created_at"],
+    } for r in run_rows]
+    result = build_funnel(json.loads(share["content"]), sessions)
+    return {
+        "token": token,
+        "name": share["script_name"],
+        "created_at": share["created_at"],
+        "invite_only": bool(share["invite_only"]),
+        "lang_code": share["lang_code"],
+        "lang_label": share["lang_label"],
+        **result,
+    }
 
 
 # ---- invite codes for share snapshots -------------------------------------
