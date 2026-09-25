@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .db import get_db, init_db
+from .graph import build_path_funnel
 from .graph import plan_route
 from .graph import replay_run
 from .graph import step as graph_step
@@ -595,6 +596,75 @@ def get_share(token: str):
             # translations.nodes[node_id].title/.text/.options[option_id].
             "translations": json.loads(row["translations"] or "{}"),
             "read_only": True}
+
+
+# ---- share answer path funnel ---------------------------------------------
+
+@app.get("/api/scripts/{script_id}/shares")
+def list_script_shares(script_id: int):
+    """Share snapshots already created for this script, newest first.
+
+    Powers the editor's snapshot picker for the answer-path funnel. Each item
+    carries its answer-session count so snapshots without samples are obvious.
+    """
+    _fetch_script(script_id)  # 404 when the script itself is gone
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT s.token AS token, s.script_name AS script_name, "
+            "s.created_at AS created_at, s.invite_only AS invite_only, "
+            "s.lang_code AS lang_code, s.lang_label AS lang_label, "
+            "(SELECT COUNT(*) FROM runs r WHERE r.share_token = s.token "
+            " AND r.mode = 'share') AS run_count "
+            "FROM shares s WHERE s.script_id = ? ORDER BY s.created_at DESC, s.token DESC",
+            (script_id,),
+        ).fetchall()
+    return [{"token": r["token"], "script_name": r["script_name"],
+             "created_at": r["created_at"], "invite_only": bool(r["invite_only"]),
+             "lang_code": r["lang_code"], "lang_label": r["lang_label"],
+             "run_count": r["run_count"]} for r in rows]
+
+
+@app.get("/api/share/{token}/funnel")
+def share_path_funnel(token: str):
+    """Answer-path prefix trie built ONLY from this snapshot's sessions.
+
+    Only ``runs.mode = 'share'`` rows bound to the exact share token are read —
+    editor previews and other snapshots of the same script never enter the
+    funnel. Each session contributes its recorded (original node_id,
+    option_id) choices in order; paths are branched by depth, so a loop's
+    repeated selection of the same option stays at its own deeper node instead
+    of merging by node id. Every prefix reports arrivals, sessions that
+    stopped there unfinished, sessions that finished there and the arrival
+    ratio against its parent prefix; labels resolve from the SNAPSHOT content
+    (original text), not from any later script edit. Read-only: nothing is
+    written and no other snapshot's sessions are touched.
+    """
+    with get_db() as db:
+        share = db.execute(
+            "SELECT token, script_id, script_name, content, created_at, "
+            "invite_only, lang_code, lang_label FROM shares WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if share is None:
+            raise HTTPException(404, "分享链接不存在或已失效")
+        rows = db.execute(
+            "SELECT id, steps, finished, created_at FROM runs "
+            "WHERE share_token = ? AND mode = 'share' ORDER BY id",
+            (token,),
+        ).fetchall()
+
+    content = json.loads(share["content"])
+    funnel = build_path_funnel(content, rows)
+    return {
+        "token": share["token"],
+        "script_id": share["script_id"],
+        "name": share["script_name"],
+        "created_at": share["created_at"],
+        "invite_only": bool(share["invite_only"]),
+        "lang_code": share["lang_code"],
+        "lang_label": share["lang_label"],
+        **funnel,
+    }
 
 
 # ---- invite codes for share snapshots -------------------------------------

@@ -1,6 +1,7 @@
 """Branch script graph: validation, traversal and waypoint route planning."""
 from __future__ import annotations
 
+import json
 from collections import deque
 from typing import Any
 
@@ -391,6 +392,147 @@ def replay_run(content: dict[str, Any], steps: list[dict] | None,
             detail={"node_title": _display_title(node_map, cur["id"])})
 
     return {"status": "compatible", "choice_count": choice_count, "breakpoint": None}
+
+
+# ---- share answer path funnel ---------------------------------------------
+
+def _choice_pairs(steps: list[dict] | None) -> list[tuple]:
+    """Recorded choices in order as (node_id, option_id).
+
+    A run row stores the chosen option_id on the step of the node the choice
+    was made at (the next step is the node arrived at), so only steps carrying
+    an option_id are choices.
+    """
+    return [(s.get("node_id"), s.get("option_id"))
+            for s in (steps or []) if s.get("node_id") and s.get("option_id")]
+
+
+def build_path_funnel(content: dict[str, Any],
+                      runs: list[dict]) -> dict[str, Any]:
+    """Prefix trie over the answer paths of ONE share snapshot.
+
+    Every recorded answer session contributes one branch made of its chosen
+    (node_id, option_id) pairs in order. Branching is by choice at the current
+    trie depth only — sessions that loop back to an already visited node are
+    NOT merged: choosing the same option again on a later lap lands at a deeper
+    node, exactly as recorded. Each trie node (prefix) counts the sessions that
+    reached it, and of those how many stopped there unfinished vs finished
+    there; ``ratio`` is arrivals relative to the parent prefix (null at the
+    root). All labels come from the snapshot content, never from the script
+    that may have been edited afterwards.
+
+    ``runs`` items need keys: id, steps, finished, created_at. The returned
+    ``sessions`` list mirrors the input sessions with a compact ``path`` of
+    choice pairs, letting the editor list the session ids under any prefix
+    without a second query.
+    """
+    nodes = content.get("nodes") or []
+    node_map = {n.get("id"): n for n in nodes}
+
+    # Mutable trie node; serialised (sorted, labels resolved) afterwards.
+    def new_trie_node(depth: int) -> dict[str, Any]:
+        return {"depth": depth, "arrivals": 0, "stopped_unfinished": 0,
+                "completed": 0, "run_ids": [], "children": {}}
+
+    root = new_trie_node(0)
+    sessions_out: list[dict[str, Any]] = []
+    total_finished = total_stopped = 0
+
+    for raw in runs:
+        row = dict(raw) if not isinstance(raw, dict) else raw
+        steps = json.loads(row["steps"]) if isinstance(row["steps"], str) else (row["steps"] or [])
+        pairs = _choice_pairs(steps)
+        finished = bool(row["finished"])
+        if finished:
+            total_finished += 1
+        else:
+            total_stopped += 1
+
+        node = root
+        node["arrivals"] += 1
+        node["run_ids"].append(row["id"])
+        path_edges: list[tuple] = []   # choices already made on THIS trie path
+        for pair in pairs:
+            edge = node["children"].get(pair)
+            if edge is None:
+                # A node at this depth is only reachable via one exact prefix,
+                # so whether its edge repeats an ancestor choice is fixed.
+                edge = new_trie_node(node["depth"] + 1)
+                edge["repeated_edge"] = pair in path_edges
+                node["children"][pair] = edge
+            node = edge
+            node["arrivals"] += 1
+            node["run_ids"].append(row["id"])
+            path_edges.append(pair)
+
+        # The session ends at the deepest prefix it reached (a leaf of its own
+        # branch): that prefix alone gets the "ended here" count. (A session
+        # with zero choices ends on the root prefix.)
+        if finished:
+            node["completed"] += 1
+        else:
+            node["stopped_unfinished"] += 1
+
+        sessions_out.append({
+            "run_id": row["id"],
+            "finished": finished,
+            "created_at": row.get("created_at"),
+            "choice_count": len(pairs),
+            "path": [[nid, oid] for nid, oid in pairs],
+        })
+
+    option_rank = {nid: {o.get("id"): i for i, o in enumerate(n.get("options") or [])}
+                   for nid, n in node_map.items()}
+    node_rank = {n.get("id"): i for i, n in enumerate(nodes)}
+
+    def edge_meta(src_id: Any, opt_id: Any) -> dict[str, Any]:
+        src = node_map.get(src_id) or {}
+        opt = next((o for o in (src.get("options") or [])
+                    if o.get("id") == opt_id), None) or {}
+        target_id = opt.get("target_id")
+        target = node_map.get(target_id) or {}
+        return {
+            "node_id": src_id,
+            "node_title": src.get("title", "") or ("" if src_id is None else str(src_id)),
+            "node_missing": src_id is not None and src_id not in node_map,
+            "option_id": opt_id,
+            "option_label": opt.get("label", "") or ("" if opt_id is None else str(opt_id)),
+            "option_missing": src_id in node_map and opt is None,
+            "target_id": target_id,
+            "target_title": target.get("title", "") or (
+                "" if target_id is None else str(target_id)),
+        }
+
+    def serialize(tn: dict, edge: dict | None, parent_arrivals: int | None):
+        out = {
+            "depth": tn["depth"],
+            "edge": edge,
+            "repeated_edge": tn.get("repeated_edge", False),
+            "arrivals": tn["arrivals"],
+            "stopped_unfinished": tn["stopped_unfinished"],
+            "completed": tn["completed"],
+            "ratio": (round(tn["arrivals"] / parent_arrivals, 4)
+                      if parent_arrivals else None),
+            "run_ids": tn["run_ids"],
+        }
+        children = list(tn["children"].items())
+        children.sort(key=lambda kv: (
+            node_rank.get(kv[0][0], 1 << 30),
+            option_rank.get(kv[0][0], {}).get(kv[0][1], 1 << 30),
+            str(kv[0][0]), str(kv[0][1]),
+        ))
+        out["children"] = [serialize(child, edge_meta(src_id, opt_id), tn["arrivals"])
+                           for (src_id, opt_id), child in children]
+        return out
+
+    total = root["arrivals"]
+    return {
+        "total_sessions": total,
+        "completed_total": total_finished,
+        "stopped_unfinished_total": total_stopped,
+        "tree": serialize(root, None, None),
+        "sessions": sessions_out,
+    }
 
 
 # ---- runtime traversal ----------------------------------------------------

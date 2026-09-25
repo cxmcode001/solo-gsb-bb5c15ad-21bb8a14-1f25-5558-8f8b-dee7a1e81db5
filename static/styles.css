@@ -285,6 +285,92 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .cov-opt.none { color: var(--muted); }
 .cov-opt.none .cov-bar-fill { display: none; }
 
+/* ---------- share answer path funnel ---------- */
+.funnel-meta { margin-bottom: 10px; }
+.funnel-meta-line {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 13px; background: #f8fafc; border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 12px;
+}
+.funnel-meta-line code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px; background: #eef2ff; color: #4338ca; border-radius: 4px; padding: 1px 6px;
+}
+.funnel-quiet { color: var(--muted); font-size: 12px; }
+
+.funnel-tree {
+  margin-top: 12px; max-height: 44vh; overflow: auto;
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: #fafbfc;
+}
+.funnel-children {
+  margin-left: 22px; border-left: 1px dashed #cbd5e1; padding-left: 12px;
+}
+.funnel-node { margin-bottom: 2px; }
+.funnel-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 10px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  border: 1px solid transparent; min-width: 640px;
+}
+.funnel-row:hover { background: #f0f9ff; border-color: #bae6fd; }
+.funnel-row.selected { background: #e0f2fe; border-color: var(--primary); }
+.funnel-row.root { background: #f8fafc; font-weight: 600; }
+.funnel-row.root:hover { background: #f0f9ff; }
+.funnel-depth {
+  flex: none; font-size: 10px; font-weight: 700; color: var(--muted);
+  background: #eef2f7; border-radius: 4px; padding: 1px 6px;
+}
+.funnel-label { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.funnel-root { color: var(--text); }
+.funnel-choice { color: var(--primary); }
+.funnel-target { color: var(--text); font-weight: 600; }
+.funnel-loop {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  background: #fef3c7; color: #92400e;
+}
+.funnel-warn {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  background: #ffe4e6; color: var(--coverage-miss);
+}
+.funnel-stats { margin-left: auto; display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.funnel-arr { color: var(--primary); font-size: 14px; }
+.funnel-stop { color: var(--orphan); font-size: 12px; }
+.funnel-done { color: var(--start); font-size: 12px; }
+.funnel-ratio {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  color: var(--muted); min-width: 96px; justify-content: flex-end;
+}
+.funnel-bar {
+  width: 56px; height: 7px; background: #e5e7eb; border-radius: 999px; overflow: hidden;
+}
+.funnel-bar > span { display: block; height: 100%; background: var(--primary); }
+
+.funnel-sessions {
+  margin-top: 12px; border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; background: #fff;
+}
+.funnel-sessions h4 { margin: 0 0 8px; font-size: 13px; }
+.funnel-sessions h4 small { color: var(--muted); font-weight: 400; }
+.funnel-sess-list { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+.funnel-sess {
+  display: flex; align-items: center; gap: 10px; font-size: 12px;
+  padding: 5px 10px; border-radius: 6px; background: #f8fafc; border: 1px solid #eef0f3;
+}
+.funnel-sess code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #eef2ff; color: #4338ca; border-radius: 4px; padding: 1px 7px;
+}
+.funnel-sess.done { color: var(--start); }
+.funnel-sess.stop { color: var(--orphan); }
+.funnel-here {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  background: #dcfce7; color: var(--start);
+}
+.funnel-past {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  background: #e0e7ff; color: var(--primary);
+}
+.funnel-sess-date { margin-left: auto; color: #9ca3af; font-size: 11px; }
+
 /* ---------- route planning ---------- */
 .route-tip { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.8; }
 .route-tip b { color: var(--text); }

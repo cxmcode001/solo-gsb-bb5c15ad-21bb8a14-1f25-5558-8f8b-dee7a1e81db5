@@ -403,6 +403,190 @@ function renderImpact(r) {
   });
 }
 
+// ---------------------------------------------------------------- share answer path funnel
+// 分享作答路径漏斗: pick one ALREADY CREATED share snapshot and build a prefix
+// trie from that snapshot's own answer sessions (never editor previews and
+// never other snapshots of the same script). A session's branch is its recorded
+// (node_id, option_id) choices in order; branching is by depth only, so a loop
+// keeps the repeated choice at its own deeper node instead of merging by node.
+// Each prefix shows arrivals / stopped-unfinished / completed counts and the
+// arrival ratio versus its parent; clicking a prefix lists the session ids that
+// reached it. All labels come from the snapshot's original content.
+
+const funnelState = { shares: [], data: null };
+
+async function openFunnel() {
+  if (!state.currentId) return;
+  openModal("funnelModal");
+  $("#funnelMeta").innerHTML = "";
+  $("#funnelSummary").innerHTML = `<div class="cov-empty">正在加载分享快照列表…</div>`;
+  $("#funnelTree").innerHTML = "";
+  $("#funnelSessions").style.display = "none";
+  $("#funnelSessions").innerHTML = "";
+  funnelState.data = null;
+  await loadFunnelShares();
+}
+
+async function loadFunnelShares() {
+  const sel = $("#funnelShare");
+  try {
+    funnelState.shares = await api(`/api/scripts/${state.currentId}/shares`);
+  } catch (err) {
+    sel.innerHTML = "";
+    $("#funnelMeta").innerHTML = "";
+    $("#funnelSummary").innerHTML =
+      `<div class="route-none">分享快照列表加载失败：${esc(err.message)}</div>`;
+    $("#funnelTree").innerHTML = "";
+    return;
+  }
+  if (!funnelState.shares.length) {
+    sel.innerHTML = `<option value="">（当前脚本还没有创建过分享快照）</option>`;
+    sel.disabled = true;
+    $("#funnelMeta").innerHTML = "";
+    $("#funnelSummary").innerHTML = `<div class="cov-empty-big">📭 当前脚本还没有分享快照<br>
+      <small>先用「🔗 只读分享」生成一个分享快照，并把链接发给受访者作答，之后即可在此查看该快照的作答路径漏斗。</small></div>`;
+    $("#funnelTree").innerHTML = "";
+    return;
+  }
+  sel.disabled = false;
+  const prev = sel.value;
+  sel.innerHTML = funnelState.shares.map((s) =>
+    `<option value="${esc(s.token)}">${esc(s.name)} · ${esc((s.created_at || "").replace("T", " ").slice(0, 16))} · ${s.run_count} 次作答</option>`
+  ).join("");
+  sel.value = funnelState.shares.some((s) => s.token === prev) ? prev : funnelState.shares[0].token;
+  await loadFunnelData();
+}
+
+async function loadFunnelData() {
+  const token = $("#funnelShare").value;
+  if (!token) return;
+  funnelState.data = null;
+  $("#funnelSummary").innerHTML = `<div class="cov-empty">正在读取该快照的作答会话…</div>`;
+  $("#funnelTree").innerHTML = "";
+  $("#funnelSessions").style.display = "none";
+  $("#funnelSessions").innerHTML = "";
+  try {
+    funnelState.data = await api(`/api/share/${encodeURIComponent(token)}/funnel`);
+  } catch (err) {
+    $("#funnelSummary").innerHTML = `<div class="route-none">路径漏斗加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  renderFunnel();
+}
+
+function renderFunnel() {
+  const d = funnelState.data;
+  if (!d) return;
+  const created = (d.created_at || "").replace("T", " ").slice(0, 16);
+  $("#funnelMeta").innerHTML = `
+    <div class="funnel-meta-line">
+      <span>快照：<b>${esc(d.name)}</b></span>
+      <code>${esc(d.token)}</code>
+      <span class="funnel-quiet">生成于 ${esc(created)}</span>
+      ${d.invite_only ? '<span class="invite-chip">🎫 邀请制</span>' : ""}
+      ${d.lang_code
+        ? `<span class="lang-chip">🌐 ${esc(d.lang_label || d.lang_code)}（${esc(d.lang_code)}）</span>`
+        : '<span class="route-tag">原文快照</span>'}
+    </div>`;
+
+  if (!d.total_sessions) {
+    $("#funnelSummary").innerHTML = `<div class="cov-empty-big">📭 该分享快照还没有作答会话（空样本）<br>
+      <small>把该快照的分享链接发给受访者开始作答后，这里会按原脚本节点 ID / 选项 ID 顺序构建路径前缀树。</small></div>`;
+    $("#funnelTree").innerHTML = "";
+    return;
+  }
+  $("#funnelSummary").innerHTML = `
+    <div class="cov-cards">
+      <div><b>${d.total_sessions}</b><span>到达会话（全部）</span></div>
+      <div><b style="color:var(--start)">${d.completed_total}</b><span>完成</span></div>
+      <div><b style="color:var(--orphan)">${d.stopped_unfinished_total}</b><span>未完成停止</span></div>
+      <div><b>${Math.round((d.completed_total / d.total_sessions) * 100)}%</b><span>整体完成率</span></div>
+    </div>
+    <div class="cov-line">点击任一行可列出到达该前缀的会话 ID；百分比为相对父路径的到达比例（根节点为全部会话）；
+      🔁 表示该节点/选项已在同一路径更浅深度出现（环路），仍按深层独立前缀统计。</div>`;
+  $("#funnelTree").innerHTML = renderFunnelNode(d.tree, []);
+  $("#funnelTree").querySelectorAll("[data-prefix]").forEach((row) => {
+    row.onclick = () => showFunnelSessions(JSON.parse(row.dataset.prefix));
+  });
+}
+
+function renderFunnelNode(node, prefix) {
+  const isRoot = node.depth === 0;
+  const pct = node.ratio == null ? 100 : Math.round(node.ratio * 1000) / 10;
+  let labelHtml;
+  if (isRoot) {
+    labelHtml = `<span class="funnel-root">🌳 全部会话（根前缀）</span>`;
+  } else {
+    const edge = node.edge;
+    labelHtml = `
+      <span title="节点 ID：${esc(edge.node_id ?? "")}">${esc(edge.node_title)}</span>
+      <span class="funnel-choice">—「${esc(edge.option_label)}」→</span>
+      <span class="funnel-target" title="目标节点 ID：${esc(edge.target_id ?? "")}">${esc(edge.target_title || "（未记录目标）")}</span>
+      ${edge.option_missing ? '<span class="funnel-warn" title="该选项已不在快照原文中">选项已消失</span>' : ""}
+      ${node.repeated_edge ? '<span class="funnel-loop" title="同一节点/选项已在该路径更浅深度出现（环路），此深层前缀独立统计、不按节点合并">🔁 环路重复</span>' : ""}`;
+  }
+  const row = `
+    <div class="funnel-row ${isRoot ? "root" : ""}" data-prefix='${esc(JSON.stringify(prefix))}'>
+      <span class="funnel-depth">D${node.depth}</span>
+      <span class="funnel-label">${labelHtml}</span>
+      <span class="funnel-stats">
+        <b class="funnel-arr">${node.arrivals}</b> 到达
+        <span class="funnel-stop" title="在此停止的未完成会话">⏹ ${node.stopped_unfinished}</span>
+        <span class="funnel-done" title="在此完成的会话">✓ ${node.completed}</span>
+        <span class="funnel-ratio" title="相对父路径的到达比例">
+          <span class="funnel-bar"><span style="width:${pct}%"></span></span>${isRoot ? "—" : `${pct}%`}
+        </span>
+      </span>
+    </div>`;
+  const children = node.children.length
+    ? `<div class="funnel-children">${node.children.map((ch) =>
+        renderFunnelNode(ch, prefix.concat([[ch.edge.node_id, ch.edge.option_id]]))).join("")}</div>`
+    : "";
+  return `<div class="funnel-node">${row}${children}</div>`;
+}
+
+function findFunnelNode(tree, prefix) {
+  let node = tree;
+  for (const [nid, oid] of prefix) {
+    node = (node.children || []).find(
+      (c) => c.edge.node_id === nid && c.edge.option_id === oid);
+    if (!node) return null;
+  }
+  return node;
+}
+
+function showFunnelSessions(prefix) {
+  const d = funnelState.data;
+  if (!d) return;
+  const node = findFunnelNode(d.tree, prefix);
+  const pl = prefix.length;
+  const matched = d.sessions.filter((s) =>
+    pl === 0 || (s.path.length >= pl && prefix.every(
+      (p, i) => s.path[i][0] === p[0] && s.path[i][1] === p[1])));
+  $("#funnelTree").querySelectorAll(".funnel-row").forEach((r) => {
+    r.classList.toggle("selected", r.dataset.prefix === JSON.stringify(prefix));
+  });
+  const past = node ? node.arrivals - node.completed - node.stopped_unfinished : 0;
+  $("#funnelSessions").style.display = "";
+  $("#funnelSessions").innerHTML = `
+    <h4>到达该前缀的会话 · ${matched.length} 个
+      <small>（在此完成 ${node ? node.completed : 0} · 在此停止未完成 ${node ? node.stopped_unfinished : 0} · 继续向下 ${past}）</small>
+    </h4>
+    <div class="funnel-sess-list">
+      ${matched.map((s) => `
+        <div class="funnel-sess ${s.finished ? "done" : "stop"}">
+          <code title="会话 ID">#${s.run_id}</code>
+          <span>${s.finished ? "✓ 已完成" : "⏹ 未完成"}</span>
+          <span class="funnel-quiet">${s.choice_count} 次选择</span>
+          ${s.path.length === pl
+            ? '<span class="funnel-here">在此结束</span>'
+            : '<span class="funnel-past">继续向下</span>'}
+          <span class="funnel-sess-date">${esc((s.created_at || "").replace("T", " ").slice(0, 16))}</span>
+        </div>`).join("")}
+    </div>`;
+  $("#funnelSessions").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 // ---------------------------------------------------------------- route planning
 // 指定选项路线规划: check 1–6 options that have connected targets on the
 // CURRENT canvas (unsaved edits included); the server BFSes over
@@ -1043,6 +1227,9 @@ function bindToolbar() {
   $("#btnCoverage").onclick = openCoverage;
   $("#btnImpact").onclick = openImpact;
   $("#impactRefresh").onclick = runImpact;
+  $("#btnFunnel").onclick = openFunnel;
+  $("#funnelShare").onchange = loadFunnelData;
+  $("#funnelRefresh").onclick = loadFunnelData;
   $("#btnRoute").onclick = openRoute;
   $("#routeRun").onclick = runRoutePlan;
   $("#btnI18n").onclick = openI18n;
